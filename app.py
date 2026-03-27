@@ -34,6 +34,36 @@ scenarios = [(10000, 1), (10000, 6), (10000, 12), (10000, 24),
              (1000000, 1), (1000000, 6), (1000000, 12), (1000000, 24)]
 MAX_STEPS = 4
 
+# --- 핵심 해결책: 버튼 클릭 시 화면을 다시 그리기 전에 논리부터 처리하는 함수 ---
+def make_choice(choice):
+    amount, delay = scenarios[st.session_state.current_scenario]
+    current_offer = int((st.session_state.low + st.session_state.high) / 2)
+
+    if choice == 'now':
+        st.session_state.high = current_offer
+    else:
+        st.session_state.low = current_offer
+
+    st.session_state.step += 1
+
+    # 4번의 질문이 끝났을 때 데이터 저장 및 다음 라운드 준비
+    if st.session_state.step >= MAX_STEPS:
+        indifference_point = int((st.session_state.low + st.session_state.high) / 2)
+        if supabase:
+            supabase.table("discount_results").insert({
+                "nickname": st.session_state.nickname,
+                "amount": amount,
+                "delay_months": delay,
+                "indifference_point": indifference_point,
+                "passed_attention_check": True
+            }).execute()
+        
+        st.session_state.current_scenario += 1
+        st.session_state.step = 0
+        st.session_state.low = 0
+        if st.session_state.current_scenario < len(scenarios):
+            st.session_state.high = scenarios[st.session_state.current_scenario][0]
+
 def get_class_stage():
     if supabase:
         res = supabase.table('class_state').select('stage').eq('id', 1).execute()
@@ -61,7 +91,7 @@ if st.session_state.role is None:
         st.subheader("👨‍🏫 교수 입장")
         admin_pw = st.text_input("관리자 비밀번호:", type="password")
         if st.button("교수 화면 열기"):
-            if admin_pw == "3383": # 비밀번호 설정
+            if admin_pw == "3383": 
                 st.session_state.role = 'professor'
                 st.rerun()
             else:
@@ -117,40 +147,31 @@ elif st.session_state.role == 'professor':
         
         if data:
             df = pd.DataFrame(data)
-            df = df[df['passed_attention_check'] == True] # 유효 데이터만 필터링
+            df = df[df['passed_attention_check'] == True]
             
             if not df.empty:
-                # 수학적 계산을 위한 데이터 전처리
-                df['V'] = df['indifference_point'].clip(lower=1) # 0으로 나누기 방지
+                df['V'] = df['indifference_point'].clip(lower=1)
                 df['A'] = df['amount']
-                df['d'] = df['delay_months'] / 12.0 # 연 단위 변환
+                df['d'] = df['delay_months'] / 12.0
                 
-                # 지수형 할인율(r) 및 쌍곡형 할인율(k) 계산
-                # r = (A/V)^(1/d) - 1
                 df['r_value'] = (df['A'] / df['V']) ** (1 / df['d']) - 1
-                # k = (A/V - 1) / d
                 df['k_value'] = (df['A'] / df['V'] - 1) / df['d']
                 
-                # 금액과 기간별 평균값 집계
                 summary = df.groupby(['amount', 'delay_months'])[['V', 'r_value', 'k_value']].mean().reset_index()
                 
-                # 결과 출력 (1만원 조건)
                 st.write("#### 💰 1만원 보상 조건 분석")
                 df_10k = summary[summary['amount'] == 10000]
                 
                 col_chart1, col_chart2 = st.columns(2)
                 with col_chart1:
                     st.write("**기간별 계산된 지수형 할인율 (r값)**")
-                    st.caption("기간이 길어질수록 r값이 하락한다면 지수형 모델의 모순을 의미합니다.")
                     st.line_chart(df_10k.set_index('delay_months')['r_value'], color="#FF4B4B")
                 with col_chart2:
                     st.write("**기간별 계산된 쌍곡형 할인율 (k값)**")
-                    st.caption("k값이 비교적 평탄하게 유지된다면 인간 심리가 쌍곡형에 가깝다는 증거입니다.")
                     st.line_chart(df_10k.set_index('delay_months')['k_value'], color="#1f77b4")
                 
                 st.divider()
                 
-                # 결과 출력 (100만원 조건)
                 st.write("#### 💰 100만원 보상 조건 분석 (크기 효과 확인)")
                 df_1000k = summary[summary['amount'] == 1000000]
                 
@@ -187,7 +208,6 @@ elif st.session_state.role == 'student':
             amount, delay = scenarios[st.session_state.current_scenario]
             current_offer = int((st.session_state.low + st.session_state.high) / 2)
             
-            # 진행률 바
             st.progress((st.session_state.current_scenario) / len(scenarios), text=f"전체 진행률 ({st.session_state.current_scenario + 1}/{len(scenarios)})")
             
             st.subheader(f"Q. 다음 중 하나를 선택하세요. (현재 {amount:,}원 세트)")
@@ -195,28 +215,7 @@ elif st.session_state.role == 'student':
             
             col1, col2 = st.columns(2)
             with col1:
-                if st.button(f"👇 **지금 당장** {current_offer:,}원 받기", use_container_width=True):
-                    st.session_state.high = current_offer
-                    st.session_state.step += 1
+                # 변경점: on_click 매개변수를 사용하여 버튼 클릭 즉시 논리 처리
+                st.button(f"👇 **지금 당장** {current_offer:,}원 받기", on_click=make_choice, args=('now',), use_container_width=True)
             with col2:
-                if st.button(f"⏳ **{delay}개월 뒤에** {amount:,}원 받기", use_container_width=True):
-                    st.session_state.low = current_offer
-                    st.session_state.step += 1
-
-            if st.session_state.step >= MAX_STEPS:
-                indifference_point = int((st.session_state.low + st.session_state.high) / 2)
-                if supabase:
-                    supabase.table("discount_results").insert({
-                        "nickname": st.session_state.nickname,
-                        "amount": amount,
-                        "delay_months": delay,
-                        "indifference_point": indifference_point,
-                        "passed_attention_check": True
-                    }).execute()
-                
-                st.session_state.current_scenario += 1
-                st.session_state.step = 0
-                st.session_state.low = 0
-                if st.session_state.current_scenario < len(scenarios):
-                    st.session_state.high = scenarios[st.session_state.current_scenario][0]
-                st.rerun()
+                st.button(f"⏳ **{delay}개월 뒤에** {amount:,}원 받기", on_click=make_choice, args=('later',), use_container_width=True)

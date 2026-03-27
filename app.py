@@ -119,41 +119,33 @@ elif st.session_state.role == 'professor':
             
     st.divider()
     
-    # --- 수정된 기능: 상세 현황 표 (8단계 k값 포함) ---
+    # --- 학생별 상세 현황 표 (유지됨) ---
     st.subheader("👨‍🎓 학생별 상세 k값 현황")
     if st.button("현황 새로고침"):
         data = supabase.table('discount_results').select('*').execute().data
         if data:
             df_all = pd.DataFrame(data)
             
-            # 수치 계산
             df_all['V'] = df_all['indifference_point'].clip(lower=1)
             df_all['d'] = df_all['delay_months'] / 12.0
             df_all['k_val'] = (df_all['amount'] / df_all['V'] - 1) / df_all['d']
             
-            # 시나리오 이름 매핑 (1~8단계)
             labels = ["1만/1m", "1만/6m", "1만/12m", "1만/24m", "100만/1m", "100만/6m", "100만/12m", "100만/24m"]
             
-            # 학생별로 데이터를 재구성(Pivot)
             student_list = []
             for nick in df_all['nickname'].unique():
                 temp = df_all[df_all['nickname'] == nick]
-                # 시나리오 순서대로 k값 추출
                 row = {"별명": nick}
                 for i, (amt, d_m) in enumerate(scenarios):
                     val = temp[(temp['amount'] == amt) & (temp['delay_months'] == d_m)]['k_val']
                     row[labels[i]] = round(val.iloc[0], 2) if not val.empty else np.nan
                 
-                # 평균 k값 계산
                 row["평균 k"] = round(temp['k_val'].mean(), 2) if not temp.empty else 0
                 student_list.append(row)
             
             display_df = pd.DataFrame(student_list)
-            
-            # 완료 여부에 따라 정렬 (평균 k값 기준)
             st.dataframe(display_df.set_index("별명"), use_container_width=True)
             
-            # 간단 요약 메시지
             counts = df_all['nickname'].value_counts()
             finished = len(counts[counts >= 8])
             st.success(f"현재 총 {finished}명의 학생이 실험을 완료했습니다.")
@@ -162,7 +154,7 @@ elif st.session_state.role == 'professor':
             
     st.divider()
     
-    # 결과 분석 및 r, k 계산
+    # 결과 분석 및 r, k 계산 (그래프 분리 복구)
     if current_stage == 'result':
         st.subheader("📊 실시간 할인율 분석 결과")
         data = supabase.table('discount_results').select('*').execute().data
@@ -180,18 +172,32 @@ elif st.session_state.role == 'professor':
                 
                 summary = df.groupby(['amount', 'delay_months'])[['V', 'r_value', 'k_value']].mean().reset_index()
                 
-                # 그래프 영역
+                st.write("#### 💰 1만원 보상 조건 분석 (전체 평균)")
+                df_10k = summary[summary['amount'] == 10000]
+                
                 col_chart1, col_chart2 = st.columns(2)
                 with col_chart1:
-                    st.write("#### 💰 1만원 조건 (평균)")
-                    df_10k = summary[summary['amount'] == 10000]
-                    st.line_chart(df_10k.set_index('delay_months')[['r_value', 'k_value']])
+                    st.write("**기간별 계산된 지수형 할인율 (r값)**")
+                    st.line_chart(df_10k.set_index('delay_months')['r_value'], color="#FF4B4B")
                 with col_chart2:
-                    st.write("#### 💰 100만원 조건 (평균)")
-                    df_1000k = summary[summary['amount'] == 1000000]
-                    st.line_chart(df_1000k.set_index('delay_months')[['r_value', 'k_value']])
+                    st.write("**기간별 계산된 쌍곡형 할인율 (k값)**")
+                    st.line_chart(df_10k.set_index('delay_months')['k_value'], color="#1f77b4")
                 
                 st.divider()
+                
+                st.write("#### 💰 100만원 보상 조건 분석 (전체 평균)")
+                df_1000k = summary[summary['amount'] == 1000000]
+                
+                col_chart3, col_chart4 = st.columns(2)
+                with col_chart3:
+                    st.write("**기간별 계산된 지수형 할인율 (r값)**")
+                    st.line_chart(df_1000k.set_index('delay_months')['r_value'], color="#FF4B4B")
+                with col_chart4:
+                    st.write("**기간별 계산된 쌍곡형 할인율 (k값)**")
+                    st.line_chart(df_1000k.set_index('delay_months')['k_value'], color="#1f77b4")
+                
+                st.divider()
+
                 st.write("#### 👥 반 전체 학생들의 충동성(k값) 분포")
                 student_k_mean = df.groupby('nickname')['k_value'].mean()
                 hist_counts, bin_edges = np.histogram(student_k_mean, bins=10)
@@ -199,7 +205,7 @@ elif st.session_state.role == 'professor':
                     index=[f"{bin_edges[i]:.1f}~{bin_edges[i+1]:.1f}" for i in range(len(bin_edges)-1)])
                 st.bar_chart(hist_df, color="#2ca02c")
             else:
-                st.write("데이터 부족")
+                st.write("유효한 데이터가 부족합니다.")
 
 # --- 3. 학생 참여 화면 ---
 elif st.session_state.role == 'student':

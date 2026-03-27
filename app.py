@@ -46,7 +46,6 @@ def make_choice(choice):
 
     st.session_state.step += 1
 
-    # 4번의 질문이 끝났을 때 데이터 저장 및 다음 라운드 준비
     if st.session_state.step >= MAX_STEPS:
         indifference_point = int((st.session_state.low + st.session_state.high) / 2)
         if supabase:
@@ -104,7 +103,6 @@ elif st.session_state.role == 'professor':
     
     st.info(f"현재 강의실 상태: **{current_stage.upper()}**")
     
-    # 통제 버튼 모음
     c1, c2, c3 = st.columns(3)
     with c1:
         if st.button("1. 대기시키기", use_container_width=True):
@@ -121,38 +119,46 @@ elif st.session_state.role == 'professor':
             
     st.divider()
     
-    # --- 추가 요청 기능 1: 현황 패널에 별명과 k값(평균) 함께 표시 ---
-    st.subheader("👨‍🎓 실험 종료 학생 현황")
+    # --- 수정된 기능: 상세 현황 표 (8단계 k값 포함) ---
+    st.subheader("👨‍🎓 학생별 상세 k값 현황")
     if st.button("현황 새로고침"):
         data = supabase.table('discount_results').select('*').execute().data
         if data:
-            df_status = pd.DataFrame(data)
+            df_all = pd.DataFrame(data)
             
-            # 현황판에서 k값을 즉시 보여주기 위한 사전 계산
-            df_status['V'] = df_status['indifference_point'].clip(lower=1)
-            df_status['d'] = df_status['delay_months'] / 12.0
-            df_status['k_val'] = (df_status['amount'] / df_status['V'] - 1) / df_status['d']
+            # 수치 계산
+            df_all['V'] = df_all['indifference_point'].clip(lower=1)
+            df_all['d'] = df_all['delay_months'] / 12.0
+            df_all['k_val'] = (df_all['amount'] / df_all['V'] - 1) / df_all['d']
             
-            counts = df_status['nickname'].value_counts()
+            # 시나리오 이름 매핑 (1~8단계)
+            labels = ["1만/1m", "1만/6m", "1만/12m", "1만/24m", "100만/1m", "100만/6m", "100만/12m", "100만/24m"]
             
-            finished_students = counts[counts >= 8].index.tolist()
-            in_progress_students = counts[counts < 8].index.tolist()
-            
-            if finished_students:
-                # 완료한 학생들의 전체 평균 k값 도출
-                finished_df = df_status[df_status['nickname'].isin(finished_students)]
-                k_means = finished_df.groupby('nickname')['k_val'].mean()
+            # 학생별로 데이터를 재구성(Pivot)
+            student_list = []
+            for nick in df_all['nickname'].unique():
+                temp = df_all[df_all['nickname'] == nick]
+                # 시나리오 순서대로 k값 추출
+                row = {"별명": nick}
+                for i, (amt, d_m) in enumerate(scenarios):
+                    val = temp[(temp['amount'] == amt) & (temp['delay_months'] == d_m)]['k_val']
+                    row[labels[i]] = round(val.iloc[0], 2) if not val.empty else np.nan
                 
-                # 출력 텍스트 포맷팅: 별명 (k=0.00)
-                finished_display = [f"{nick} (k={k_means[nick]:.2f})" for nick in finished_students]
-                st.success(f"✅ 완료 학생 ({len(finished_students)}명): " + ", ".join(finished_display))
-            else:
-                st.success("✅ 완료 학생 (0명): 아직 없습니다.")
-                
-            if in_progress_students:
-                st.warning(f"🏃 진행 중 학생 ({len(in_progress_students)}명): " + ", ".join(in_progress_students))
+                # 평균 k값 계산
+                row["평균 k"] = round(temp['k_val'].mean(), 2) if not temp.empty else 0
+                student_list.append(row)
+            
+            display_df = pd.DataFrame(student_list)
+            
+            # 완료 여부에 따라 정렬 (평균 k값 기준)
+            st.dataframe(display_df.set_index("별명"), use_container_width=True)
+            
+            # 간단 요약 메시지
+            counts = df_all['nickname'].value_counts()
+            finished = len(counts[counts >= 8])
+            st.success(f"현재 총 {finished}명의 학생이 실험을 완료했습니다.")
         else:
-            st.info("아직 제출을 시작한 학생이 없습니다.")
+            st.info("아직 데이터가 없습니다.")
             
     st.divider()
     
@@ -169,61 +175,31 @@ elif st.session_state.role == 'professor':
                 df['V'] = df['indifference_point'].clip(lower=1)
                 df['A'] = df['amount']
                 df['d'] = df['delay_months'] / 12.0
-                
                 df['r_value'] = (df['A'] / df['V']) ** (1 / df['d']) - 1
                 df['k_value'] = (df['A'] / df['V'] - 1) / df['d']
                 
-                # --- 평균 선 그래프 영역 ---
                 summary = df.groupby(['amount', 'delay_months'])[['V', 'r_value', 'k_value']].mean().reset_index()
                 
-                st.write("#### 💰 1만원 보상 조건 분석 (전체 평균)")
-                df_10k = summary[summary['amount'] == 10000]
-                
+                # 그래프 영역
                 col_chart1, col_chart2 = st.columns(2)
                 with col_chart1:
-                    st.write("**기간별 계산된 지수형 할인율 (r값)**")
-                    st.line_chart(df_10k.set_index('delay_months')['r_value'], color="#FF4B4B")
+                    st.write("#### 💰 1만원 조건 (평균)")
+                    df_10k = summary[summary['amount'] == 10000]
+                    st.line_chart(df_10k.set_index('delay_months')[['r_value', 'k_value']])
                 with col_chart2:
-                    st.write("**기간별 계산된 쌍곡형 할인율 (k값)**")
-                    st.line_chart(df_10k.set_index('delay_months')['k_value'], color="#1f77b4")
+                    st.write("#### 💰 100만원 조건 (평균)")
+                    df_1000k = summary[summary['amount'] == 1000000]
+                    st.line_chart(df_1000k.set_index('delay_months')[['r_value', 'k_value']])
                 
                 st.divider()
-                
-                st.write("#### 💰 100만원 보상 조건 분석 (전체 평균)")
-                df_1000k = summary[summary['amount'] == 1000000]
-                
-                col_chart3, col_chart4 = st.columns(2)
-                with col_chart3:
-                    st.write("**기간별 계산된 지수형 할인율 (r값)**")
-                    st.line_chart(df_1000k.set_index('delay_months')['r_value'], color="#FF4B4B")
-                with col_chart4:
-                    st.write("**기간별 계산된 쌍곡형 할인율 (k값)**")
-                    st.line_chart(df_1000k.set_index('delay_months')['k_value'], color="#1f77b4")
-                
-                st.divider()
-
-                # --- 추가 요청 기능 2: 학생 개인별 평균 k값 분포 시각화 (히스토그램) ---
                 st.write("#### 👥 반 전체 학생들의 충동성(k값) 분포")
-                st.caption("학생 개인별 평균 k값을 나타낸 분포도입니다. 오른쪽으로 갈수록(k값이 클수록) 당장의 유혹에 약하고 충동적인 학생입니다.")
-                
-                # 학생별 전체 시나리오의 평균 k값 계산
                 student_k_mean = df.groupby('nickname')['k_value'].mean()
-                
-                # 데이터를 10개의 구간(bin)으로 나누어 히스토그램 데이터 생성
                 hist_counts, bin_edges = np.histogram(student_k_mean, bins=10)
-                
-                # 스트림릿 막대 차트에 넣기 위해 데이터프레임으로 변환
-                # 가로축 라벨 예시: "0.5~2.1"
-                hist_df = pd.DataFrame(
-                    {'학생 수(명)': hist_counts},
-                    index=[f"{bin_edges[i]:.1f} ~ {bin_edges[i+1]:.1f}" for i in range(len(bin_edges)-1)]
-                )
-                
-                # 막대그래프 렌더링
+                hist_df = pd.DataFrame({'학생 수(명)': hist_counts},
+                    index=[f"{bin_edges[i]:.1f}~{bin_edges[i+1]:.1f}" for i in range(len(bin_edges)-1)])
                 st.bar_chart(hist_df, color="#2ca02c")
-
             else:
-                st.write("유효한 데이터가 부족합니다.")
+                st.write("데이터 부족")
 
 # --- 3. 학생 참여 화면 ---
 elif st.session_state.role == 'student':
@@ -241,20 +217,13 @@ elif st.session_state.role == 'student':
         
     elif current_stage == 'experiment':
         if st.session_state.current_scenario >= len(scenarios):
-            st.success("내 응답이 완료되었습니다. 다른 학생들을 위해 잠시 대기해 주세요.")
-            if st.button("현재 상태 확인"):
-                st.rerun()
+            st.success("내 응답이 완료되었습니다. 대기해 주세요.")
+            if st.button("새로고침"): st.rerun()
         else:
             amount, delay = scenarios[st.session_state.current_scenario]
             current_offer = int((st.session_state.low + st.session_state.high) / 2)
-            
-            st.progress((st.session_state.current_scenario) / len(scenarios), text=f"전체 진행률 ({st.session_state.current_scenario + 1}/{len(scenarios)})")
-            
-            st.subheader(f"Q. 다음 중 하나를 선택하세요. (현재 {amount:,}원 세트)")
-            st.write(f"지연 기간: **{delay}개월 뒤**")
-            
+            st.progress((st.session_state.current_scenario) / len(scenarios))
+            st.subheader(f"Q. {amount:,}원 세트 ({delay}개월 뒤)")
             col1, col2 = st.columns(2)
-            with col1:
-                st.button(f"👇 **지금 당장** {current_offer:,}원 받기", on_click=make_choice, args=('now',), use_container_width=True)
-            with col2:
-                st.button(f"⏳ **{delay}개월 뒤에** {amount:,}원 받기", on_click=make_choice, args=('later',), use_container_width=True)
+            with col1: st.button(f"👇 지금 {current_offer:,}원", on_click=make_choice, args=('now',), use_container_width=True)
+            with col2: st.button(f"⏳ {delay}개월 뒤 {amount:,}원", on_click=make_choice, args=('later',), use_container_width=True)
